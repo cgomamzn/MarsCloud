@@ -1,0 +1,135 @@
+# Setup external storage with AWS S3
+#
+# MarsCloud.SPACE | Terraform S3 Build
+# Maintainer: Carlos R Gomez <crgomez167@gmail.com>
+#
+
+#-- Provider Declaration --
+provider "aws" {
+  region                  = "eu-west-1"
+  shared_credentials_file = "/Users/$USER/.aws/credentials"
+  profile                 = "terraform"
+}
+
+#-- Resource Type --
+resource "aws_s3_bucket" "storage" {
+  bucket = "mars-bunker"
+  acl    = "private"
+
+  versioning {
+    enabled = true
+  }
+
+  #-- S3 Tags --
+  tags {
+    Name        = "marscloud-s3-terraform-bucket"
+    Environment = "Prod"
+  }
+
+  #-- S3 Logging --
+  logging {
+    target_bucket = "${aws_s3_bucket.log_bucket.id}"
+    target_prefix = "log/"
+  }
+
+  #-- S3 Enabled Default Server Side Encryption --
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        kms_master_key_id = "${path.module}/clavis"
+        sse_algorithm     = "aws:kms"
+      }
+    }
+  }
+}
+
+#-- S3 Create Trail --
+data "aws_s3_bucket" "storage" {
+  bucket = "mars-bucket"
+}
+
+resource "aws_cloudtrail" "object_level_logging" {
+  name                          = "tf-mars-bunker-trail"
+  s3_bucket_name                = "marscloud.space.capcom"
+  include_global_service_events = false
+  depends_on                    = ["aws_s3_bucket.storage_cloudtrail_s3"]
+
+  #-- other configurations --
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+
+    data_resource {
+      type = "AWS::S3::Object"
+
+      values = ["${data.aws_s3_bucket.storage.arn}/"]
+    }
+  }
+}
+
+#-- S3 CloudTrail Storage Bucket --
+resource "aws_s3_bucket" "storage_cloudtrail_s3" {
+  bucket = "marscloud.space.capcom"
+  policy = "${file("${path.module}/policy.json")}"
+}
+
+#-- S3 Log Bucket --
+resource "aws_s3_bucket" "log_bucket" {
+  bucket = "mars-bunker-storage-logs"
+  acl    = "log-delivery-write"
+}
+
+#-- S3 IAM ROLE "Storage Role" --
+resource "aws_iam_role" "storage_role" {
+  name = "storage_s3_role"
+
+  assume_role_policy = <<POLICY
+  {
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Action": "sts:AssumeRole",
+              "Principal": {
+                  "Service": "s3.amazonaws.com"
+              },
+              "Effect": "Allow",
+              "Sid": ""
+          }
+      ]
+  }
+  POLICY
+}
+
+#-- S3 IAM Policy "Storage Policy" --
+resource "aws_iam_policy" "storage_policy" {
+  name = "tf-iam-policy-storage-s3"
+
+  #-- other configurations --
+  policy = <<POLICY
+  {
+    "Version": "2012-10-17",
+    "Id": "storage_s3",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:DeleteObject",
+                "s3:ListBucket"
+        ],
+        "Resource": [
+          "arn:aws:s3:::marscloud.space",
+          "arn:aws:s3:::marscloud.space/*"
+        ]
+        }
+    ]
+}
+    POLICY
+}
+
+#-- S3 IAM Role/Policy Attachment --
+resource "aws_iam_role_policy_attachment" "storage_attach" {
+  role       = "${aws_iam_role.storage_role.name}"
+  policy_arn = "${aws_iam_policy.storage_policy.arn}"
+}
